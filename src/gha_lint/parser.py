@@ -53,23 +53,50 @@ def _clean_dict(d: Any) -> Any:
 class WorkflowParser:
     def __init__(self, root_path: str | Path):
         self.root_path = Path(root_path)
+        self.scan_root, self.search_patterns = self._resolve_scan_targets(self.root_path)
+
+    @staticmethod
+    def _resolve_scan_targets(root: Path) -> tuple[Path, list[Path]]:
+        if root.is_file():
+            if root.suffix.lower() in {".yml", ".yaml"}:
+                return root.parent, [root]
+            return root.parent, []
+
+        root = root.resolve()
+
+        is_workflows_dir = (
+            root.name == "workflows"
+            and root.parent.name == ".github"
+        )
+
+        patterns: list[Path]
+        if is_workflows_dir:
+            patterns = [
+                root / "*.yml",
+                root / "*.yaml",
+            ]
+        else:
+            patterns = [
+                root / ".github" / "workflows" / "*.yml",
+                root / ".github" / "workflows" / "*.yaml",
+            ]
+
+        files: list[Path] = []
+        for p in patterns:
+            files.extend(Path(fp) for fp in glob.glob(str(p)))
+        return root, files
 
     def find_workflow_files(self) -> list[Path]:
-        patterns = [
-            self.root_path / ".github" / "workflows" / "*.yml",
-            self.root_path / ".github" / "workflows" / "*.yaml",
-        ]
-        files: list[Path] = []
-        for pattern in patterns:
-            files.extend(Path(p) for p in glob.glob(str(pattern)))
-        return sorted(files)
+        return sorted(self.search_patterns)
 
     def parse_file(self, file_path: str | Path) -> WorkflowModel:
         file_path = Path(file_path)
         with open(file_path, "r", encoding="utf-8") as f:
             raw = yaml.load(f, Loader=LineLoader) or {}
 
-        return self._build_model(file_path, raw)
+        model = self._build_model(file_path, raw)
+        model.raw = raw
+        return model
 
     def parse_all(self) -> Iterator[WorkflowModel]:
         for file_path in self.find_workflow_files():

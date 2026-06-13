@@ -103,3 +103,4 @@ class WorkflowModel:
     concurrency: Any = None
     defaults: dict[str, Any] = field(default_factory=dict)
     env: dict[str, Any] = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)

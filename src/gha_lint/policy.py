@@ -10,6 +10,7 @@ from .models import Severity
 
 DEFAULT_POLICY_YAML = """# gha-lint default policy
 rules:
+  schema_validation: error
   actions_must_pin_sha: error
   forbid_curl_pipe_bash: error
   require_timeout_minutes: warn
@@ -18,6 +19,7 @@ rules:
   forbidden_actions:
     - actions/checkout@v3
   require_concurrency: info
+  matrix_not_expanded: info
 
 secrets_naming_pattern: '^[A-Z0-9_]+$'
 default_timeout_minutes: 360

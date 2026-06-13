@@ -272,6 +272,56 @@ class RequireConcurrencyRule(BaseRule):
         return findings
 
 
+class SchemaValidationRule(BaseRule):
+    info = RuleInfo(
+        rule_id="schema_validation",
+        description="Validate workflow structure against GitHub Actions schema subset.",
+        default_severity=Severity.ERROR,
+        category="schema",
+    )
+
+    def evaluate(self, workflow: WorkflowModel) -> list[Finding]:
+        from .schema import validate_workflow_schema
+
+        if not workflow.raw:
+            return []
+
+        base_findings = validate_workflow_schema(workflow.file_path, workflow.raw)
+        results: list[Finding] = []
+        for f in base_findings:
+            f.severity = self._map_severity(f.severity)
+            results.append(f)
+        return results
+
+    def _map_severity(self, original: Severity) -> Severity:
+        base_level = self.severity.to_int()
+        original_level = original.to_int()
+        if original_level >= base_level:
+            return original
+        return self.severity
+
+
+class MatrixExpandWarningRule(BaseRule):
+    info = RuleInfo(
+        rule_id="matrix_not_expanded",
+        description="Note that matrix jobs are not expanded by gha-lint; "
+                    "findings may only reflect the first matrix combination.",
+        default_severity=Severity.INFO,
+        category="correctness",
+    )
+
+    def evaluate(self, workflow: WorkflowModel) -> list[Finding]:
+        findings: list[Finding] = []
+        for job in workflow.jobs:
+            if job.strategy and "matrix" in job.strategy:
+                msg = (
+                    f"Job '{job.id}' uses strategy.matrix. "
+                    "gha-lint does not expand matrices; rules run against the unexpanded definition."
+                )
+                findings.append(self._make_finding(workflow, job.line, msg))
+        return findings
+
+
 ALL_RULES: list[type[BaseRule]] = [
     ActionsMustPinShaRule,
     ForbidCurlPipeBashRule,
@@ -280,6 +330,8 @@ ALL_RULES: list[type[BaseRule]] = [
     SecretsNamingRule,
     ForbiddenActionsRule,
     RequireConcurrencyRule,
+    SchemaValidationRule,
+    MatrixExpandWarningRule,
 ]
 
 
