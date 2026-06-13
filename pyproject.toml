@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gha-lint"
+version = "0.1.0"
+description = "Lint tool for GitHub Actions workflows with custom policy rules"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "gha-lint" }]
+license = { text = "MIT" }
+dependencies = [
+    "typer>=0.12.0",
+    "pyyaml>=6.0",
+    "rich>=13.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=4.1",
+    "ruff>=0.3.0",
+    "mypy>=1.8",
+]
+
+[project.scripts]
+gha-lint = "gha_lint.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true

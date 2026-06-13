@@ -1,0 +1,46 @@
+name: gha-lint self-check
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+      - 'policy.yaml'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/**'
+      - 'policy.yaml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gha-lint-self-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Run gha-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11  # v4.1.1
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@0a5c61591373683505ea898e09a52eb86d0f6a75  # v5.0.0
+        with:
+          python-version: '3.11'
+
+      - name: Install gha-lint
+        run: |
+          pip install --upgrade pip
+          pip install -e .
+
+      - name: Run gha-lint scan
+        run: |
+          gha-lint scan \
+            --path . \
+            --policy policy.yaml \
+            --format github \
+            --fail-on error

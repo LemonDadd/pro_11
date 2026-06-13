@@ -1,0 +1,9 @@
+- id: gha-lint
+  name: gha-lint
+  description: Lint GitHub Actions workflow files with custom policy rules
+  entry: gha-lint scan
+  language: python
+  types: [yaml]
+  files: ^\.github/workflows/.*\.(yml|yaml)$
+  pass_filenames: false
+  args: [--format, table, --fail-on, error]

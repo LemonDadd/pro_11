@@ -1,0 +1,51 @@
+name: 'gha-lint'
+description: 'Lint GitHub Actions workflows with custom policy rules'
+author: 'gha-lint'
+
+inputs:
+  policy-path:
+    description: 'Path to policy.yaml file. If omitted, uses built-in defaults.'
+    required: false
+    default: ''
+  path:
+    description: 'Root path to scan or single workflow file'
+    required: false
+    default: '.'
+  fail-on:
+    description: 'Minimum severity to fail on: error, warn, info'
+    required: false
+    default: 'error'
+  format:
+    description: 'Output format: table, github, json, sarif'
+    required: false
+    default: 'github'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install gha-lint
+      shell: bash
+      run: |
+        pip install --upgrade pip
+        pip install "${{ github.action_path }}"
+
+    - name: Run gha-lint
+      shell: bash
+      id: gha-lint-run
+      env:
+        POLICY_ARG: ${{ inputs.policy-path && format('--policy {0}', inputs.policy-path) || '' }}
+      run: |
+        gha-lint scan \
+          --path "${{ inputs.path }}" \
+          --format "${{ inputs.format }}" \
+          --fail-on "${{ inputs.fail-on }}" \
+          ${{ env.POLICY_ARG }}
+
+branding:
+  icon: 'check-square'
+  color: 'green'

@@ -1,0 +1,12 @@
+rules:
+  actions_must_pin_sha: error
+  forbid_curl_pipe_bash: error
+  require_timeout_minutes: warn
+  permissions_default_read: warn
+  secrets_naming: warn
+  forbidden_actions:
+    - actions/checkout@v3
+  require_concurrency: info
+
+secrets_naming_pattern: '^[A-Z0-9_]+$'
+default_timeout_minutes: 360
