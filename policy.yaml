@@ -12,3 +12,6 @@ rules:
 
 secrets_naming_pattern: '^[A-Z0-9_]+$'
 default_timeout_minutes: 360
+
+allowed_actions: []
+allowed_orgs: []

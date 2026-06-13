@@ -69,7 +69,7 @@ class ActionsMustPinShaRule(BaseRule):
         findings: list[Finding] = []
         for job in workflow.jobs:
             for step in job.steps:
-                if step.uses:
+                if step.uses and not self._is_allowed(step.uses):
                     ref = self._extract_ref(step.uses)
                     if ref and not SHA_PATTERN.match(ref):
                         msg = (
@@ -77,7 +77,7 @@ class ActionsMustPinShaRule(BaseRule):
                             f"got '@{ref}'."
                         )
                         findings.append(self._make_finding(workflow, step.line, msg, step.uses))
-            if job.uses_workflow:
+            if job.uses_workflow and not self._is_allowed(job.uses_workflow):
                 ref = self._extract_ref(job.uses_workflow)
                 if ref and not SHA_PATTERN.match(ref):
                     msg = (
@@ -86,6 +86,10 @@ class ActionsMustPinShaRule(BaseRule):
                     )
                     findings.append(self._make_finding(workflow, job.line, msg, job.uses_workflow))
         return findings
+
+    def _is_allowed(self, uses: str) -> bool:
+        action_name = uses.split("@")[0] if "@" in uses else uses
+        return self.policy.is_action_allowed(action_name)
 
     @staticmethod
     def _extract_ref(uses: str) -> str | None:

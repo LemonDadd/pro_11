@@ -9,7 +9,14 @@ import yaml
 from gha_lint.models import Severity
 from gha_lint.parser import WorkflowParser
 from gha_lint.policy import Policy
-from gha_lint.rules import MatrixExpandWarningRule, RuleEngine, SchemaValidationRule
+from gha_lint.rules import (
+    ActionsMustPinShaRule,
+    MatrixExpandWarningRule,
+    RuleEngine,
+    SchemaValidationRule,
+)
+from gha_lint.dependency import build_dependency_graph, cycle_findings_from_graph
+from gha_lint.scoring import calculate_score
 
 
 @pytest.fixture
@@ -196,3 +203,252 @@ class TestIntegrationWithNewRules:
         rule_ids = {f.rule_id for f in findings}
         assert "actions_must_pin_sha" in rule_ids
         assert "matrix_not_expanded" in rule_ids
+
+
+class TestDependencyGraph:
+    def test_simple_call(self, temp_repo_root: Path):
+        _write_wf(temp_repo_root, "caller.yml", {
+            "on": ["push"],
+            "jobs": {
+                "call": {
+                    "uses": "org/repo/.github/workflows/build.yml@v1",
+                }
+            },
+        })
+        _write_wf(temp_repo_root, "build.yml", {
+            "on": ["workflow_call"],
+            "jobs": {"build": {"runs-on": "u", "steps": [{"run": "echo"}]}},
+        })
+        workflows = list(WorkflowParser(temp_repo_root).parse_all())
+        graph = build_dependency_graph(workflows)
+        assert len(graph.edges) == 1
+        assert graph.edges[0].callee_ref == "org/repo/.github/workflows/build.yml@v1"
+        assert graph.edges[0].caller_job == "call"
+
+    def test_no_cycles_for_unrelated(self, temp_repo_root: Path):
+        _write_wf(temp_repo_root, "a.yml", {
+            "on": ["push"],
+            "jobs": {"call": {"uses": "external/build.yml@v1"}},
+        })
+        _write_wf(temp_repo_root, "b.yml", {
+            "on": ["workflow_call"],
+            "jobs": {"build": {"runs-on": "u", "steps": [{"run": "echo"}]}},
+        })
+        workflows = list(WorkflowParser(temp_repo_root).parse_all())
+        graph = build_dependency_graph(workflows)
+        cycles = graph.detect_cycles()
+        assert len(cycles) == 0
+
+    def test_self_cycle_via_manual_graph(self):
+        from gha_lint.dependency import DependencyGraph, WorkflowCallEdge
+
+        graph = DependencyGraph()
+        graph.workflows = {"wf_a": None}  # type: ignore
+        graph.edges = [
+            WorkflowCallEdge(
+                caller_file="wf_a",
+                callee_ref="wf_a",
+                caller_job="call",
+                line=5,
+            )
+        ]
+        cycles = graph.detect_cycles()
+        assert len(cycles) == 1
+        assert cycles[0] == ["wf_a", "wf_a"]
+
+    def test_two_node_cycle_via_manual_graph(self):
+        from gha_lint.dependency import DependencyGraph, WorkflowCallEdge
+
+        graph = DependencyGraph()
+        graph.workflows = {"wf_a": None, "wf_b": None}  # type: ignore
+        graph.edges = [
+            WorkflowCallEdge(caller_file="wf_a", callee_ref="wf_b", caller_job="c1", line=1),
+            WorkflowCallEdge(caller_file="wf_b", callee_ref="wf_a", caller_job="c2", line=2),
+        ]
+        cycles = graph.detect_cycles()
+        assert len(cycles) == 1
+        assert "wf_a" in cycles[0]
+        assert "wf_b" in cycles[0]
+
+    def test_cycle_findings(self):
+        from gha_lint.dependency import DependencyGraph, WorkflowCallEdge
+
+        graph = DependencyGraph()
+        graph.workflows = {"wf_a": None, "wf_b": None}  # type: ignore
+        graph.edges = [
+            WorkflowCallEdge(caller_file="wf_a", callee_ref="wf_b", caller_job="c1", line=5),
+            WorkflowCallEdge(caller_file="wf_b", callee_ref="wf_a", caller_job="c2", line=10),
+        ]
+        findings = cycle_findings_from_graph(graph)
+        assert len(findings) >= 1
+        assert findings[0].rule_id == "reusable_cycle"
+        assert findings[0].severity == Severity.ERROR
+
+    def test_to_mermaid(self, temp_repo_root: Path):
+        _write_wf(temp_repo_root, "caller.yml", {
+            "on": ["push"],
+            "jobs": {"call": {"uses": "org/build.yml@v1"}},
+        })
+        workflows = list(WorkflowParser(temp_repo_root).parse_all())
+        graph = build_dependency_graph(workflows)
+        mermaid = graph.to_mermaid()
+        assert "flowchart LR" in mermaid
+        assert "-->" in mermaid
+
+    def test_to_dict(self, temp_repo_root: Path):
+        _write_wf(temp_repo_root, "a.yml", {
+            "on": ["push"],
+            "jobs": {"call": {"uses": "org/wf@v1"}},
+        })
+        workflows = list(WorkflowParser(temp_repo_root).parse_all())
+        graph = build_dependency_graph(workflows)
+        d = graph.to_dict()
+        assert "workflows" in d
+        assert "edges" in d
+        assert "cycles" in d
+        assert "roots" in d
+        assert "leaves" in d
+
+
+class TestAllowlist:
+    def test_allowed_org_skips_pin_check(self, temp_repo_root: Path):
+        _write_wf(temp_repo_root, "wf.yml", {
+            "on": ["push"],
+            "jobs": {
+                "build": {
+                    "runs-on": "ubuntu-latest",
+                    "steps": [{"uses": "myorg/internal-action@v2"}],
+                }
+            },
+        })
+        policy = Policy.load()
+        policy.allowed_orgs = ["myorg"]
+        wf = list(WorkflowParser(temp_repo_root).parse_all())[0]
+        rule = ActionsMustPinShaRule(policy.get_rule("actions_must_pin_sha"), policy)
+        findings = rule.evaluate(wf)
+        assert len(findings) == 0
+
+    def test_allowed_action_skips_pin_check(self, temp_repo_root: Path):
+        _write_wf(temp_repo_root, "wf.yml", {
+            "on": ["push"],
+            "jobs": {
+                "build": {
+                    "runs-on": "ubuntu-latest",
+                    "steps": [{"uses": "myorg/special-action@main"}],
+                }
+            },
+        })
+        policy = Policy.load()
+        policy.allowed_actions = ["myorg/special-action"]
+        wf = list(WorkflowParser(temp_repo_root).parse_all())[0]
+        rule = ActionsMustPinShaRule(policy.get_rule("actions_must_pin_sha"), policy)
+        findings = rule.evaluate(wf)
+        assert len(findings) == 0
+
+    def test_unrelated_action_still_flagged(self, temp_repo_root: Path):
+        _write_wf(temp_repo_root, "wf.yml", {
+            "on": ["push"],
+            "jobs": {
+                "build": {
+                    "runs-on": "ubuntu-latest",
+                    "steps": [{"uses": "otherorg/action@v1"}],
+                }
+            },
+        })
+        policy = Policy.load()
+        policy.allowed_orgs = ["myorg"]
+        wf = list(WorkflowParser(temp_repo_root).parse_all())[0]
+        rule = ActionsMustPinShaRule(policy.get_rule("actions_must_pin_sha"), policy)
+        findings = rule.evaluate(wf)
+        assert len(findings) == 1
+
+    def test_policy_loads_allowlist_from_yaml(self):
+        yaml_content = """
+rules:
+  actions_must_pin_sha: error
+allowed_actions:
+  - myorg/special-action
+allowed_orgs:
+  - myorg
+  - otherorg
+"""
+        policy = Policy._from_yaml(yaml_content)
+        assert policy.allowed_actions == ["myorg/special-action"]
+        assert policy.allowed_orgs == ["myorg", "otherorg"]
+
+    def test_policy_roundtrip_allowlist(self):
+        policy = Policy.load()
+        policy.allowed_orgs = ["myorg"]
+        policy.allowed_actions = ["myorg/action1"]
+        yaml_text = policy.to_yaml()
+        p2 = Policy._from_yaml(yaml_text)
+        assert p2.allowed_orgs == ["myorg"]
+        assert p2.allowed_actions == ["myorg/action1"]
+
+
+class TestScoring:
+    def test_perfect_score(self):
+        result = calculate_score([])
+        assert result.score == 100
+        assert result.grade() == "A"
+        assert result.total_deductions == 0
+
+    def test_error_deduction(self):
+        from gha_lint.models import Finding
+
+        findings = [
+            Finding(
+                file="wf.yml",
+                line=1,
+                rule_id="r1",
+                severity=Severity.ERROR,
+                message="x",
+            )
+        ]
+        result = calculate_score(findings)
+        assert result.score == 90
+        assert result.total_deductions == 10
+        assert result.grade() == "A"
+
+    def test_mixed_severities(self):
+        from gha_lint.models import Finding
+
+        findings = [
+            Finding(file="wf.yml", line=1, rule_id="r1", severity=Severity.ERROR, message="x"),
+            Finding(file="wf.yml", line=2, rule_id="r2", severity=Severity.WARN, message="x"),
+            Finding(file="wf.yml", line=3, rule_id="r3", severity=Severity.INFO, message="x"),
+        ]
+        result = calculate_score(findings)
+        assert result.total_deductions == 14
+        assert result.score == 86
+        assert result.grade() == "B"
+
+    def test_floor_at_zero(self):
+        from gha_lint.models import Finding
+
+        findings = [
+            Finding(file="wf.yml", line=i, rule_id="r", severity=Severity.ERROR, message="x")
+            for i in range(20)
+        ]
+        result = calculate_score(findings)
+        assert result.score == 0
+        assert result.grade() == "F"
+
+    def test_per_file_breakdown(self):
+        from gha_lint.models import Finding
+
+        findings = [
+            Finding(file="a.yml", line=1, rule_id="r1", severity=Severity.ERROR, message="x"),
+            Finding(file="a.yml", line=2, rule_id="r2", severity=Severity.WARN, message="x"),
+            Finding(file="b.yml", line=1, rule_id="r3", severity=Severity.WARN, message="x"),
+        ]
+        result = calculate_score(findings)
+        assert result.per_file["a.yml"] == 13
+        assert result.per_file["b.yml"] == 3
+
+    def test_to_dict(self):
+        result = calculate_score([])
+        d = result.to_dict()
+        assert d["score"] == 100
+        assert "breakdown" in d
+        assert "per_file" in d

@@ -14,6 +14,7 @@ from .models import Severity, WorkflowModel
 from .parser import WorkflowParser
 from .policy import DEFAULT_POLICY_YAML, Policy
 from .rules import RuleEngine, explain_rule
+from .scoring import calculate_score, format_score
 
 app = typer.Typer(
     name="gha-lint",
@@ -53,7 +54,7 @@ def scan(
         Path("."),
         "--path",
         "-p",
-        help="Root path containing .github/workflows/ directory, or a single workflow file.",
+        help="Repository root, workflows directory, or a single workflow file.",
         exists=True,
         readable=True,
     ),
@@ -83,6 +84,12 @@ def scan(
         "-o",
         help="Write output to file instead of stdout (for non-table formats).",
     ),
+    show_score: bool = typer.Option(
+        False,
+        "--score",
+        "-s",
+        help="Show compliance score (0-100) alongside findings.",
+    ),
 ) -> None:
     """Scan workflow files for policy violations."""
     try:
@@ -105,9 +112,7 @@ def scan(
     else:
         wf_files = parser.find_workflow_files()
         if not wf_files:
-            err_console.print(
-                f"[yellow]No workflow files found under {path}/.github/workflows/[/yellow]"
-            )
+            err_console.print(f"[yellow]No workflow files found at path: {path}[/yellow]")
         for wf_file in wf_files:
             try:
                 workflows.append(parser.parse_file(wf_file))
@@ -127,6 +132,11 @@ def scan(
         else:
             if rendered:
                 console.print(rendered)
+
+    if show_score:
+        score_result = calculate_score(findings)
+        console.print()
+        console.print(format_score(score_result))
 
     summary = ScanSummary.from_findings(findings)
     if summary.should_fail(fail_on):
@@ -201,6 +211,66 @@ def list_rules() -> None:
             info.description,
         )
     console.print(table)
+
+
+@app.command()
+def graph(
+    path: Path = typer.Option(
+        Path("."),
+        "--path",
+        "-p",
+        help="Repository root, workflows directory, or a single workflow file.",
+        exists=True,
+        readable=True,
+    ),
+    format: str = typer.Option(
+        "table",
+        "--format",
+        "-f",
+        help="Output format: table, json, or mermaid.",
+    ),
+) -> None:
+    """Show reusable workflow dependency graph."""
+    from .dependency import build_dependency_graph
+
+    parser = WorkflowParser(path)
+    workflows = list(parser.parse_all())
+
+    graph_ = build_dependency_graph(workflows)
+
+    if format == "json":
+        import json
+
+        console.print(json.dumps(graph_.to_dict(), indent=2))
+    elif format == "mermaid":
+        console.print(graph_.to_mermaid())
+    else:
+        table = Table(title="Reusable Workflow Dependency Graph")
+        table.add_column("Caller", style="cyan")
+        table.add_column("Job", style="magenta")
+        table.add_column("→ Callee", style="yellow")
+        table.add_column("Line", justify="right")
+
+        if not graph_.edges:
+            console.print("[yellow]No reusable workflow calls detected.[/yellow]")
+        else:
+            for e in sorted(graph_.edges, key=lambda x: (x.caller_file, x.caller_job)):
+                table.add_row(e.caller_file, e.caller_job, e.callee_ref, str(e.line))
+            console.print(table)
+
+        cycles = graph_.detect_cycles()
+        if cycles:
+            console.print()
+            console.print(f"[red]Detected {len(cycles)} circular dependency(ies):[/red]")
+            for cyc in cycles:
+                console.print(f"  - {' → '.join(cyc)}")
+
+        console.print()
+        console.print(
+            f"[bold]Summary:[/bold] {len(graph_.workflows)} workflow(s), "
+            f"{len(graph_.edges)} call edge(s), "
+            f"{len(cycles)} cycle(s)"
+        )
 
 
 if __name__ == "__main__":
