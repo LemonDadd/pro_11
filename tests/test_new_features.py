@@ -204,6 +204,47 @@ class TestIntegrationWithNewRules:
         assert "actions_must_pin_sha" in rule_ids
         assert "matrix_not_expanded" in rule_ids
 
+    def test_scan_merges_cycle_findings(self, temp_repo_root: Path):
+        """End-to-end: scan must include reusable_cycle findings from dependency graph."""
+        _write_wf(temp_repo_root, "a.yml", {
+            "on": ["workflow_call", "push"],
+            "jobs": {
+                "call_b": {
+                    "uses": "owner/repo/.github/workflows/b.yml@v1",
+                }
+            },
+        })
+        _write_wf(temp_repo_root, "b.yml", {
+            "on": ["workflow_call"],
+            "jobs": {
+                "call_a": {
+                    "uses": "./.github/workflows/a.yml@main",
+                }
+            },
+        })
+        workflows = list(WorkflowParser(temp_repo_root).parse_all())
+        policy = Policy.load()
+        engine = RuleEngine(policy)
+
+        # Simulate scan flow: evaluate rules + add cycle findings
+        findings = engine.evaluate_all(workflows)
+        from gha_lint.dependency import build_dependency_graph, cycle_findings_from_graph
+        graph = build_dependency_graph(workflows)
+        findings.extend(cycle_findings_from_graph(graph))
+
+        rule_ids = {f.rule_id for f in findings}
+        assert "reusable_cycle" in rule_ids
+        cycle_f = [f for f in findings if f.rule_id == "reusable_cycle"]
+        assert len(cycle_f) == 1
+        assert cycle_f[0].severity == Severity.ERROR
+        # cycle findings should impact scoring and exit code logic
+        from gha_lint.scoring import calculate_score
+        score = calculate_score(findings)
+        assert score.score < 100
+        from gha_lint.formatter import ScanSummary
+        summary = ScanSummary.from_findings(findings)
+        assert summary.should_fail(Severity.ERROR) is True
+
 
 class TestDependencyGraph:
     def test_simple_call(self, temp_repo_root: Path):
@@ -308,6 +349,80 @@ class TestDependencyGraph:
         assert "cycles" in d
         assert "roots" in d
         assert "leaves" in d
+
+    def test_local_callee_resolution(self, temp_repo_root: Path):
+        _write_wf(temp_repo_root, "caller.yml", {
+            "on": ["push"],
+            "jobs": {
+                "call": {
+                    "uses": "myorg/myrepo/.github/workflows/build.yml@v1",
+                }
+            },
+        })
+        _write_wf(temp_repo_root, "build.yml", {
+            "on": ["workflow_call"],
+            "jobs": {"build": {"runs-on": "u", "steps": [{"run": "echo"}]}},
+        })
+        workflows = list(WorkflowParser(temp_repo_root).parse_all())
+        graph = build_dependency_graph(workflows)
+        assert len(graph.edges) == 1
+        edge = graph.edges[0]
+        assert edge.callee_ref == "myorg/myrepo/.github/workflows/build.yml@v1"
+        assert edge.callee_file is not None
+        assert edge.callee_file.endswith("build.yml")
+        assert Path(edge.callee_file).name == "build.yml"
+
+    def test_local_relative_callee_resolution(self, temp_repo_root: Path):
+        _write_wf(temp_repo_root, "caller.yml", {
+            "on": ["push"],
+            "jobs": {
+                "call": {
+                    "uses": "./.github/workflows/build.yml@main",
+                }
+            },
+        })
+        _write_wf(temp_repo_root, "build.yml", {
+            "on": ["workflow_call"],
+            "jobs": {"build": {"runs-on": "u", "steps": [{"run": "echo"}]}},
+        })
+        workflows = list(WorkflowParser(temp_repo_root).parse_all())
+        graph = build_dependency_graph(workflows)
+        edge = graph.edges[0]
+        assert edge.callee_file is not None
+        assert Path(edge.callee_file).name == "build.yml"
+
+    def test_two_node_local_cycle_detected(self, temp_repo_root: Path):
+        _write_wf(temp_repo_root, "a.yml", {
+            "on": ["workflow_call", "push"],
+            "jobs": {
+                "call_b": {
+                    "uses": "owner/repo/.github/workflows/b.yml@v1",
+                }
+            },
+        })
+        _write_wf(temp_repo_root, "b.yml", {
+            "on": ["workflow_call"],
+            "jobs": {
+                "call_a": {
+                    "uses": "./.github/workflows/a.yml@main",
+                }
+            },
+        })
+        workflows = list(WorkflowParser(temp_repo_root).parse_all())
+        assert len(workflows) == 2
+        graph = build_dependency_graph(workflows)
+        cycles = graph.detect_cycles()
+        assert len(cycles) == 1, f"Expected 1 cycle, got {len(cycles)}: {cycles}"
+        cycle = cycles[0]
+        assert "a.yml" in cycle[0] or "a.yml" in cycle[1]
+        assert "b.yml" in cycle[0] or "b.yml" in cycle[1]
+
+        # cycle findings should also work
+        findings = cycle_findings_from_graph(graph)
+        assert len(findings) == 1
+        assert findings[0].rule_id == "reusable_cycle"
+        assert findings[0].severity == Severity.ERROR
+        assert "a.yml" in findings[0].message and "b.yml" in findings[0].message
 
 
 class TestAllowlist:

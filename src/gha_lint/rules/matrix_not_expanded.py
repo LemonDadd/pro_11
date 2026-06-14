@@ -15,7 +15,7 @@ class MatrixExpandWarningRule(BaseRule):
             "Note that matrix jobs are not expanded by gha-lint; "
             "findings may only reflect the first matrix combination."
         ),
-        default_severity=Severity.INFO,
+        default_severity=Severity.WARN,
         category="correctness",
     )
 

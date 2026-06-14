@@ -8,7 +8,7 @@ rules:
   forbidden_actions:
     - actions/checkout@v3
   require_concurrency: info
-  matrix_not_expanded: info
+  matrix_not_expanded: warn
 
 secrets_naming_pattern: '^[A-Z0-9_]+$'
 default_timeout_minutes: 360

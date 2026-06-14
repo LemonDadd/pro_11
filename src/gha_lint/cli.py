@@ -17,6 +17,7 @@ from .parser import WorkflowParser
 from .policy import DEFAULT_POLICY_YAML, Policy
 from .rules import ALL_RULES, RuleEngine, explain_rule
 from .scoring import calculate_score, format_score
+from .dependency import build_dependency_graph, cycle_findings_from_graph
 
 app = typer.Typer(
     name="gha-lint",
@@ -116,6 +117,11 @@ def scan(
             raise typer.Exit(code=2)
 
     findings = engine.evaluate_all(workflows)
+
+    if workflows:
+        graph = build_dependency_graph(workflows)
+        cycle_findings = cycle_findings_from_graph(graph)
+        findings.extend(cycle_findings)
 
     if format == OutputFormat.TABLE:
         Formatter.format(findings, format, console)

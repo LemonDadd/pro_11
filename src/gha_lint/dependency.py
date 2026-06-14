@@ -3,9 +3,61 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from .models import Finding, Severity, WorkflowModel
+
+
+def _extract_workflow_basename(callee_ref: str) -> str | None:
+    """Extract the workflow filename (e.g. ``build.yml``) from a ``uses`` ref.
+
+    Supports GitHub Actions reusable workflow references like::
+
+        owner/repo/.github/workflows/build.yml@v1
+        ./.github/workflows/build.yml@main
+        ./build.yml
+        org/build.yml@v1
+    """
+    # Strip @ref suffix
+    at_idx = callee_ref.find("@")
+    if at_idx != -1:
+        callee_ref = callee_ref[:at_idx]
+
+    # Case 1: .github/workflows/<name>
+    marker = ".github/workflows/"
+    idx = callee_ref.find(marker)
+    if idx != -1:
+        return callee_ref[idx + len(marker):]
+
+    # Case 2: ./<name> or <org>/<name>
+    slash_idx = callee_ref.rfind("/")
+    if slash_idx != -1:
+        return callee_ref[slash_idx + 1:]
+
+    # Case 3: just a name
+    if callee_ref.endswith((".yml", ".yaml")):
+        return callee_ref
+    return None
+
+
+def _resolve_callee_to_local(
+    callee_ref: str,
+    local_workflow_files: list[str],
+) -> str | None:
+    """Resolve a ``uses`` ref to a local workflow file path if possible.
+
+    ``local_workflow_files`` should be a list of absolute or relative paths to
+    all workflow files in the current repository (e.g. from ``WorkflowParser``).
+    """
+    basename = _extract_workflow_basename(callee_ref)
+    if basename is None:
+        return None
+
+    for wf_path in local_workflow_files:
+        if Path(wf_path).name == basename:
+            return wf_path
+    return None
 
 
 @dataclass
@@ -16,6 +68,7 @@ class WorkflowCallEdge:
     callee_ref: str
     caller_job: str
     line: int
+    callee_file: str | None = None
 
 
 @dataclass
@@ -27,24 +80,25 @@ class DependencyGraph:
     cycles: list[list[str]] = field(default_factory=list)
 
     def add_workflow(self, wf: WorkflowModel) -> None:
-        """Register a workflow and extract all outgoing call edges from its jobs."""
+        """Register a workflow (call before :func:`build_dependency_graph` extracts edges)."""
         self.workflows[wf.file_path] = wf
-        for job in wf.jobs:
-            if job.uses_workflow:
-                self.edges.append(WorkflowCallEdge(
-                    caller_file=wf.file_path,
-                    callee_ref=job.uses_workflow,
-                    caller_job=job.id,
-                    line=job.line,
-                ))
 
     def get_callers(self, callee: str) -> list[str]:
-        """Return all caller files that reference the given callee reference."""
-        return [e.caller_file for e in self.edges if e.callee_ref == callee]
+        """Return all caller files that reference the given callee (local file path or ref)."""
+        callers: list[str] = []
+        for e in self.edges:
+            if e.callee_file == callee or e.callee_ref == callee:
+                callers.append(e.caller_file)
+        return callers
 
     def get_callees(self, caller: str) -> list[str]:
-        """Return all callee references invoked by the given caller file."""
-        return [e.callee_ref for e in self.edges if e.caller_file == caller]
+        """Return all local callee file paths invoked by the given caller file."""
+        callees: list[str] = []
+        for e in self.edges:
+            if e.caller_file == caller:
+                target = e.callee_file if e.callee_file is not None else e.callee_ref
+                callees.append(target)
+        return callees
 
     def detect_cycles(self) -> list[list[str]]:
         """Find all cycles using DFS. Cached after the first call."""
@@ -81,12 +135,16 @@ class DependencyGraph:
     def _build_node_set(self) -> set[str]:
         nodes: set[str] = set(self.workflows.keys())
         for e in self.edges:
-            nodes.add(e.callee_ref)
+            target = e.callee_file if e.callee_file is not None else e.callee_ref
+            nodes.add(target)
         return nodes
 
     def leaf_workflows(self) -> list[str]:
         """Return workflows that are never called by any other workflow."""
-        callees: set[str] = {e.callee_ref for e in self.edges}
+        callees: set[str] = set()
+        for e in self.edges:
+            target = e.callee_file if e.callee_file is not None else e.callee_ref
+            callees.add(target)
         return sorted([w for w in self.workflows if w not in callees])
 
     def root_workflows(self) -> list[str]:
@@ -102,6 +160,7 @@ class DependencyGraph:
                 {
                     "caller": e.caller_file,
                     "callee": e.callee_ref,
+                    "callee_file": e.callee_file,
                     "job": e.caller_job,
                     "line": e.line,
                 }
@@ -118,10 +177,11 @@ class DependencyGraph:
         seen: set[tuple[str, str]] = set()
         for e in sorted(self.edges, key=lambda x: (x.caller_file, x.caller_job)):
             caller = self._mermaid_id(e.caller_file)
-            callee = self._mermaid_id(e.callee_ref)
-            if (caller, callee) not in seen:
-                lines.append(f"    {caller} --> {callee}")
-                seen.add((caller, callee))
+            callee = e.callee_file if e.callee_file is not None else e.callee_ref
+            callee_id = self._mermaid_id(callee)
+            if (caller, callee_id) not in seen:
+                lines.append(f"    {caller} --> {callee_id}")
+                seen.add((caller, callee_id))
         lines.append("")
         return "\n".join(lines)
 
@@ -132,10 +192,31 @@ class DependencyGraph:
 
 
 def build_dependency_graph(workflows: list[WorkflowModel]) -> DependencyGraph:
-    """Build a dependency graph from a collection of parsed workflows."""
+    """Build a dependency graph from a collection of parsed workflows.
+
+    Each ``job.uses:`` reference is resolved to a local workflow file path when
+    it points to a workflow in the same repository.
+    """
     graph = DependencyGraph()
+
+    # First pass: register all workflows
     for wf in workflows:
         graph.add_workflow(wf)
+
+    # Second pass: extract edges and resolve callee refs to local paths
+    local_files = list(graph.workflows.keys())
+    for wf in workflows:
+        for job in wf.jobs:
+            if job.uses_workflow:
+                callee_file = _resolve_callee_to_local(job.uses_workflow, local_files)
+                graph.edges.append(WorkflowCallEdge(
+                    caller_file=wf.file_path,
+                    callee_ref=job.uses_workflow,
+                    caller_job=job.id,
+                    line=job.line,
+                    callee_file=callee_file,
+                ))
+
     return graph
 
 
@@ -148,7 +229,8 @@ def cycle_findings_from_graph(graph: DependencyGraph) -> list[Finding]:
             continue
         edge: WorkflowCallEdge | None = None
         for e in graph.edges:
-            if e.caller_file == cycle[0] and e.callee_ref == cycle[1]:
+            callee = e.callee_file if e.callee_file is not None else e.callee_ref
+            if e.caller_file == cycle[0] and callee == cycle[1]:
                 edge = e
                 break
         line = edge.line if edge else 1
