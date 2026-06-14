@@ -1,3 +1,5 @@
+"""Compliance scoring: weighted deduction + A–F grade from lint findings."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -16,12 +18,15 @@ DEFAULT_BASE_SCORE = 100
 
 @dataclass
 class ScoreResult:
+    """Result of a compliance score calculation."""
+
     score: int
     total_deductions: int
     breakdown: dict[str, int] = field(default_factory=dict)
     per_file: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize the score to a plain dict."""
         return {
             "score": self.score,
             "total_deductions": self.total_deductions,
@@ -30,6 +35,7 @@ class ScoreResult:
         }
 
     def grade(self) -> str:
+        """Map the numeric score to a letter grade A/B/C/D/F."""
         if self.score >= 90:
             return "A"
         if self.score >= 80:
@@ -48,6 +54,7 @@ def calculate_score(
     min_score: int = 0,
     max_score: int = 100,
 ) -> ScoreResult:
+    """Compute a weighted 0-100 compliance score from a list of findings."""
     weights = weights or DEFAULT_WEIGHTS
 
     breakdown: dict[str, int] = {sev.value: 0 for sev in Severity}
@@ -72,6 +79,7 @@ def calculate_score(
 
 
 def format_score(result: ScoreResult) -> str:
+    """Render a :class:`ScoreResult` as a human-readable Rich-formatted string."""
     color = "green" if result.score >= 80 else "yellow" if result.score >= 60 else "red"
     lines = [
         f"[bold]Compliance Score:[/bold] [{color}]{result.score}/100 "

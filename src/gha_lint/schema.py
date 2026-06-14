@@ -1,124 +1,48 @@
+"""Static structural schema validation for GitHub Actions workflow files."""
+
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
 from .models import Finding, Severity
+from .schema_defs import (
+    KNOWN_TOP_LEVEL_KEYS,
+    VALID_ON_EVENTS,
+    SchemaIssue,
+)
 
-KNOWN_TOP_LEVEL_KEYS = {
-    "name",
-    "on",
-    "jobs",
-    "permissions",
-    "concurrency",
-    "env",
-    "defaults",
-    "jobs.",
-    "strateg",
-    "run-name",
-    "env",
-    "defaults",
-    "concurrency",
-}
-
-KNOWN_JOB_KEYS = {
-    "name",
-    "runs-on",
-    "steps",
-    "permissions",
-    "timeout-minutes",
-    "uses",
-    "with",
-    "secrets",
-    "needs",
-    "strategy",
-    "if",
-    "env",
-    "defaults",
-    "outputs",
-    "environment",
-    "concurrency",
-    "continue-on-error",
-    "container",
-    "services",
-    "runs-on",
-    "name",
-}
-
-KNOWN_STEP_KEYS = {
-    "name",
-    "id",
-    "uses",
-    "run",
-    "with",
-    "env",
-    "if",
-    "shell",
-    "working-directory",
-    "continue-on-error",
-    "timeout-minutes",
-    "permissions",
-    "name",
-}
-
-VALID_ON_EVENTS = {
-    "push",
-    "pull_request",
-    "pull_request_target",
-    "schedule",
-    "workflow_dispatch",
-    "workflow_run",
-    "workflow_call",
-    "create",
-    "delete",
-    "deployment",
-    "deployment_status",
-    "fork",
-    "gollum",
-    "issue_comment",
-    "issues",
-    "label",
-    "milestone",
-    "page_build",
-    "project",
-    "project_card",
-    "project_column",
-    "public",
-    "registry_package",
-    "release",
-    "status",
-    "watch",
-    "check_run",
-    "check_suite",
-    "repository_dispatch",
-    "merge_group",
-}
-
-
-@dataclass
-class SchemaIssue:
-    rule_id: str
-    message: str
-    severity: Severity
-    line: int = 1
+# Re-exported for backward compatibility
+__all__ = ["SchemaIssue", "WorkflowSchemaValidator", "validate_workflow_schema"]
 
 
 class WorkflowSchemaValidator:
+    """Validate the high-level structure of a parsed GitHub Actions workflow."""
+
     def __init__(self, file_path: str, raw: dict[str, Any]):
-        self.file_path = file_path
-        self.raw = raw
+        self.file_path: str = file_path
+        self.raw: dict[str, Any] = raw
         self.issues: list[SchemaIssue] = []
 
     def validate(self) -> list[SchemaIssue]:
+        """Run all validations and return collected issues."""
         self._validate_top_level()
         self._validate_on()
         self._validate_jobs()
         return self.issues
 
-    def _add_issue(self, rule_id: str, message: str, severity: Severity, line: int = 1) -> None:
-        self.issues.append(SchemaIssue(rule_id=rule_id, message=message, severity=severity, line=line))
+    def _add_issue(
+        self,
+        rule_id: str,
+        message: str,
+        severity: Severity,
+        line: int = 1,
+    ) -> None:
+        self.issues.append(
+            SchemaIssue(rule_id=rule_id, message=message, severity=severity, line=line)
+        )
 
-    def _get_line(self, data: dict[str, Any], default: int = 1) -> int:
+    @staticmethod
+    def _get_line(data: dict[str, Any], default: int = 1) -> int:
         return int(data.get("__line__", default))
 
     def _validate_top_level(self) -> None:
@@ -151,24 +75,21 @@ class WorkflowSchemaValidator:
                 line,
             )
 
-        if isinstance(raw.get("jobs"), dict) and len(raw.get("jobs", {})) == 0:
+        jobs_value = raw.get("jobs")
+        if isinstance(jobs_value, dict) and len(jobs_value) == 0:
             self._add_issue(
                 "schema_empty_jobs",
                 "Workflow has an empty 'jobs' section.",
                 Severity.WARN,
-                self._get_line(raw.get("jobs", {}), line),
+                self._get_line(jobs_value, line),
             )
 
-        known_top = {
-            "name", "on", "jobs", "permissions", "concurrency", "env", "defaults",
-            "run-name",
-        }
         for key in raw.keys():
             if isinstance(key, bool) and key is True:
                 continue
             if isinstance(key, str) and key.startswith("__"):
                 continue
-            if isinstance(key, str) and key not in known_top:
+            if isinstance(key, str) and key not in KNOWN_TOP_LEVEL_KEYS:
                 self._add_issue(
                     "schema_unknown_top_key",
                     f"Unknown top-level key: '{key}'.",
@@ -202,7 +123,9 @@ class WorkflowSchemaValidator:
                     )
         elif isinstance(on_val, dict):
             for event in on_val.keys():
-                if event not in VALID_ON_EVENTS and not event.startswith("__"):
+                if event not in VALID_ON_EVENTS and not (
+                    isinstance(event, str) and event.startswith("__")
+                ):
                     self._add_issue(
                         "schema_unknown_event",
                         f"Unknown event name: '{event}'.",
@@ -242,7 +165,12 @@ class WorkflowSchemaValidator:
                     jobs_line,
                 )
 
-    def _validate_job(self, job_id: str, job_raw: dict[str, Any], parent_line: int) -> None:
+    def _validate_job(
+        self,
+        job_id: str,
+        job_raw: dict[str, Any],
+        parent_line: int,
+    ) -> None:
         line = self._get_line(job_raw, parent_line)
 
         uses = job_raw.get("uses")
@@ -316,7 +244,12 @@ class WorkflowSchemaValidator:
                     line,
                 )
 
-    def _validate_step(self, job_id: str, step_raw: dict[str, Any], line: int) -> None:
+    def _validate_step(
+        self,
+        job_id: str,
+        step_raw: dict[str, Any],
+        line: int,
+    ) -> None:
         uses = step_raw.get("uses")
         run = step_raw.get("run")
 
@@ -362,6 +295,7 @@ class WorkflowSchemaValidator:
 
 
 def validate_workflow_schema(file_path: str, raw: dict[str, Any]) -> list[Finding]:
+    """Top-level entrypoint: validate a raw workflow dict and return Finding objects."""
     validator = WorkflowSchemaValidator(file_path, raw)
     issues = validator.validate()
     return [

@@ -1,3 +1,5 @@
+"""Core data models used throughout gha-lint (findings, severity, workflow AST)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -6,16 +8,21 @@ from typing import Any
 
 
 class Severity(str, Enum):
+    """Severity of a lint finding: ERROR (fatal) / WARN / INFO."""
+
     ERROR = "error"
     WARN = "warn"
     INFO = "info"
 
     def to_int(self) -> int:
+        """Map severity to an integer for comparison/sorting (higher = more severe)."""
         return {"error": 2, "warn": 1, "info": 0}[self.value]
 
 
 @dataclass
 class Location:
+    """A single source location: file path + line number + optional column."""
+
     file: str
     line: int
     column: int | None = None
@@ -23,6 +30,8 @@ class Location:
 
 @dataclass
 class Finding:
+    """A single lint finding reported by a rule."""
+
     file: str
     line: int
     rule_id: str
@@ -32,6 +41,7 @@ class Finding:
     snippet: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize to a plain dict for JSON output."""
         result: dict[str, Any] = {
             "file": self.file,
             "line": self.line,
@@ -47,6 +57,7 @@ class Finding:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Finding":
+        """Deserialize a dict previously produced by :meth:`to_dict`."""
         return cls(
             file=data["file"],
             line=data["line"],
@@ -58,6 +69,7 @@ class Finding:
         )
 
     def to_github_annotation(self) -> str:
+        """Format as a GitHub Actions workflow command annotation."""
         severity = "error" if self.severity == Severity.ERROR else "warning"
         line_part = f"line={self.line}"
         file_part = f"file={self.file}"
@@ -67,6 +79,8 @@ class Finding:
 
 @dataclass
 class Step:
+    """A single step inside a workflow job."""
+
     id: str | None = None
     name: str | None = None
     uses: str | None = None
@@ -79,6 +93,8 @@ class Step:
 
 @dataclass
 class Job:
+    """A single job definition inside a workflow."""
+
     id: str
     name: str | None = None
     steps: list[Step] = field(default_factory=list)
@@ -95,6 +111,8 @@ class Job:
 
 @dataclass
 class WorkflowModel:
+    """An in-memory representation of a parsed GitHub Actions workflow file."""
+
     file_path: str
     name: str | None = None
     on: dict[str, Any] | list[str] = field(default_factory=dict)

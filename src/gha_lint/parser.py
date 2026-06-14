@@ -1,12 +1,14 @@
+"""YAML workflow parser with line-number tracking for GitHub Actions workflows."""
+
 from __future__ import annotations
 
-import glob
 from pathlib import Path
 from typing import Any, Iterator
 
 import yaml
 
 from .models import Job, Step, WorkflowModel
+from .scan_paths import resolve_workflow_files
 
 
 class LineLoader(yaml.SafeLoader):
@@ -51,43 +53,15 @@ def _clean_dict(d: Any) -> Any:
 
 
 class WorkflowParser:
+    """Parse GitHub Actions workflow YAML files into WorkflowModel objects."""
+
     def __init__(self, root_path: str | Path):
-        self.root_path = Path(root_path)
-        self.scan_root, self.search_patterns = self._resolve_scan_targets(self.root_path)
-
-    @staticmethod
-    def _resolve_scan_targets(root: Path) -> tuple[Path, list[Path]]:
-        if root.is_file():
-            if root.suffix.lower() in {".yml", ".yaml"}:
-                return root.parent, [root]
-            return root.parent, []
-
-        root = root.resolve()
-
-        is_workflows_dir = (
-            root.name == "workflows"
-            and root.parent.name == ".github"
-        )
-
-        patterns: list[Path]
-        if is_workflows_dir:
-            patterns = [
-                root / "*.yml",
-                root / "*.yaml",
-            ]
-        else:
-            patterns = [
-                root / ".github" / "workflows" / "*.yml",
-                root / ".github" / "workflows" / "*.yaml",
-            ]
-
-        files: list[Path] = []
-        for p in patterns:
-            files.extend(Path(fp) for fp in glob.glob(str(p)))
-        return root, files
+        self.root_path: Path = Path(root_path)
+        self._cached_files: list[Path] = resolve_workflow_files(self.root_path)
 
     def find_workflow_files(self) -> list[Path]:
-        return sorted(self.search_patterns)
+        """Return the sorted list of workflow files discovered for the given path."""
+        return list(self._cached_files)
 
     def parse_file(self, file_path: str | Path) -> WorkflowModel:
         file_path = Path(file_path)

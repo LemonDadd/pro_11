@@ -1,3 +1,5 @@
+"""Command-line interface for gha-lint built on Typer."""
+
 from __future__ import annotations
 
 import sys
@@ -10,10 +12,10 @@ from rich.table import Table
 
 from . import __version__
 from .formatter import Formatter, OutputFormat, ScanSummary
-from .models import Severity, WorkflowModel
+from .models import Severity
 from .parser import WorkflowParser
 from .policy import DEFAULT_POLICY_YAML, Policy
-from .rules import RuleEngine, explain_rule
+from .rules import ALL_RULES, RuleEngine, explain_rule
 from .scoring import calculate_score, format_score
 
 app = typer.Typer(
@@ -100,25 +102,18 @@ def scan(
 
     engine = RuleEngine(policy_obj)
 
-    workflows: list[WorkflowModel] = []
     parser = WorkflowParser(path)
+    wf_files = parser.find_workflow_files()
+    if not wf_files:
+        err_console.print(f"[yellow]No workflow files found at path: {path}[/yellow]")
 
-    if path.is_file():
+    workflows = []
+    for wf_file in wf_files:
         try:
-            workflows.append(parser.parse_file(path))
+            workflows.append(parser.parse_file(wf_file))
         except Exception as e:
-            err_console.print(f"[red]Error parsing {path}: {e}[/red]")
+            err_console.print(f"[red]Error parsing {wf_file}: {e}[/red]")
             raise typer.Exit(code=2)
-    else:
-        wf_files = parser.find_workflow_files()
-        if not wf_files:
-            err_console.print(f"[yellow]No workflow files found at path: {path}[/yellow]")
-        for wf_file in wf_files:
-            try:
-                workflows.append(parser.parse_file(wf_file))
-            except Exception as e:
-                err_console.print(f"[red]Error parsing {wf_file}: {e}[/red]")
-                raise typer.Exit(code=2)
 
     findings = engine.evaluate_all(workflows)
 
@@ -176,14 +171,6 @@ def explain(
             "[yellow]Available rules:[/yellow]\n"
             + "\n".join(
                 f"  - [cyan]{cls.info.rule_id}[/cyan]: {cls.info.description}"
-                for cls in RuleEngine._rules_classes if False  # type: ignore
-            )
-        )
-        from .rules import ALL_RULES
-        err_console.print(
-            "\n[yellow]Available rules:[/yellow]\n"
-            + "\n".join(
-                f"  - [cyan]{cls.info.rule_id}[/cyan]: {cls.info.description}"
                 for cls in ALL_RULES
             )
         )
@@ -194,7 +181,6 @@ def explain(
 @app.command("list-rules")
 def list_rules() -> None:
     """List all available built-in rules."""
-    from .rules import ALL_RULES
 
     table = Table(title="Available Rules")
     table.add_column("Rule ID", style="cyan")
